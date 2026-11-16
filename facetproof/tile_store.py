@@ -157,14 +157,17 @@ class TileStore:
             if frame is None:
                 return {"exposure_id": exposure_id, "state": exposure["state"], "planned": False,
                         "committed_tiles": 0, "total_tiles": 0, "committed_pixels": 0,
-                        "total_pixels": 0, "complete": False, "fingerprint": None}
+                        "total_pixels": 0, "committed_fragments": 0,
+                        "complete": False, "fingerprint": None}
             records = self._records(conn, exposure_id)
             validate_partition(records, frame["width"], frame["height"], frame["tile_size"], frame["fingerprint"])
             completed = [row for row in records if row["state"] == "complete"]
             pixels = sum((row["bounds"][2] - row["bounds"][0]) * (row["bounds"][3] - row["bounds"][1]) for row in completed)
+            fragments = sum(row["payload"]["fragments"] for row in completed)
             return {"exposure_id": exposure_id, "state": exposure["state"], "planned": True,
                     "committed_tiles": len(completed), "total_tiles": frame["total_tiles"],
                     "committed_pixels": pixels, "total_pixels": frame["width"] * frame["height"],
+                    "committed_fragments": fragments,
                     "complete": len(completed) == frame["total_tiles"], "fingerprint": frame["fingerprint"]}
         finally:
             conn.rollback()

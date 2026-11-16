@@ -3,6 +3,12 @@ from .errors import require
 from .values import integer, now
 
 
+def canvas_units(request):
+    """High-sample pixels times shutter slices: the real rasterization work."""
+    temporal = request.get('temporal') or {}
+    return request['width'] * request['height'] * request['samples']**2 * temporal.get('slices', 1)
+
+
 class ResourceBudget:
     def __init__(self, db):
         self.db = db
@@ -22,15 +28,14 @@ class ResourceBudget:
                 # than retroactively rejecting it under the new policy.
                 for row in conn.execute("SELECT id,request FROM exposures WHERE state IN ('queued','running') ORDER BY created,id").fetchall():
                     request = parse_json(row['request'])
-                    units = request['width'] * request['height'] * request['samples']**2
-                    self._record(conn, row['id'], units, 1, 'capacity_adopted')
+                    self._record(conn, row['id'], canvas_units(request), 1, 'capacity_adopted')
 
     def _snapshot(self, conn):
         policy = dict(conn.execute("SELECT capacity,revision FROM sample_policy WHERE singleton=1").fetchone())
         used = conn.execute("SELECT COALESCE(SUM(units),0) FROM sample_allocations WHERE active=1").fetchone()[0]
         return {**policy, "reserved": used, "available": max(0, policy['capacity']-used),
                 "overcommitted": max(0, used-policy['capacity']),
-                "unit": "high_sample_pixel", "physical_memory_limit": False}
+                "unit": "high_sample_pixel_time_slice", "physical_memory_limit": False}
 
     def snapshot(self):
         with self.db.unit_of_work() as conn:
@@ -53,8 +58,7 @@ class ResourceBudget:
 
     def require_allocation(self, conn, exposure):
         allocation = self.get(conn, exposure['id'])
-        request = exposure['request']
-        units = request['width'] * request['height'] * request['samples']**2
+        units = canvas_units(exposure['request'])
         require(allocation is not None and allocation['active'] == 1 and allocation['units'] == units,
                 'allocation_missing', 'Exposure has no matching active canvas allocation', 409)
         return allocation
@@ -68,7 +72,7 @@ class ResourceBudget:
         self.db.event(conn, exposure_id, action, {'units': units, 'generation': generation})
 
     def reserve(self, conn, exposure_id, request):
-        units = request['width'] * request['height'] * request['samples']**2
+        units = canvas_units(request)
         old = self.get(conn, exposure_id)
         if old and old['active']:
             require(old['units'] == units, 'allocation', 'Exposure allocation cannot change its input', 409)
@@ -105,8 +109,7 @@ class ResourceBudget:
                         released.append(row['id'])
                 elif not old or not old['active']:
                     request = parse_json(row['request'])
-                    units = request['width'] * request['height'] * request['samples']**2
-                    if units <= self._snapshot(conn)['available']:
+                    if canvas_units(request) <= self._snapshot(conn)['available']:
                         self.reserve(conn, row['id'], request)
                         adopted.append(row['id'])
                     else:

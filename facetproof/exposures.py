@@ -1,6 +1,6 @@
 import json
 from .errors import require
-from .planner import validate_request
+from .planner import validate_request, resolve_temporal
 from .values import identity, key, digest, canonical, now
 
 
@@ -27,9 +27,12 @@ class Exposures:
     def submit(self, seal_id, data):
         request = validate_request(data)
         dedup_key = key(data.get("key"), "key")
-        request_hash = digest({"seal_id": seal_id, "request": request})
         with self.db.unit_of_work() as conn:
-            self.db.get(conn, seal_id, "seal")
+            seal = self.db.get(conn, seal_id, "seal")
+            # The resolved temporal block freezes the shared time meaning into
+            # the accepted request before hashing, reservation and queueing.
+            request = resolve_temporal(request, seal["payload"])
+            request_hash = digest({"seal_id": seal_id, "request": request})
             old = conn.execute("SELECT id,request_hash FROM exposures WHERE dedup_key=?", (dedup_key,)).fetchone()
             if old:
                 require(old["request_hash"] == request_hash, "key_conflict", "Key already names a different exposure", 409)

@@ -9,8 +9,11 @@ from .errors import InvalidBundle, require
 
 CHANNELS = frozenset({"color.rgb", "depth.f32", "object.u32",
                       "color.png", "depth.png", "object.png"})
+CHANNELS_V2 = CHANNELS | frozenset({"latest.u32"})
 MEMBERS = frozenset({"plate.json", "seal.json"}) | {
     "passes/" + name for name in CHANNELS}
+MEMBERS_V2 = frozenset({"plate.json", "seal.json"}) | {
+    "passes/" + name for name in CHANNELS_V2}
 MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_UNPACKED_BYTES = 128 * 1024 * 1024
@@ -56,12 +59,13 @@ def read_members(raw):
                 require(not entry.flag_bits & 1, "archive_encrypted", "Encrypted members are unsupported")
                 require(entry.compress_type in {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED},
                         "archive_compression", "Unsupported ZIP compression")
-                require(name in MEMBERS, "archive_members", "Unexpected archive member")
+                require(name in MEMBERS_V2, "archive_members", "Unexpected archive member")
                 require(0 <= entry.file_size <= _limit(name),
                         "archive_size", "Archive member exceeds decoded size limit")
                 total += entry.file_size
                 require(total <= MAX_UNPACKED_BYTES, "archive_size", "Decoded archive exceeds limit")
-            require(names == MEMBERS, "archive_members", "Bundle must contain exactly two metadata files and six channels")
+            require({"plate.json", "seal.json"} <= names,
+                    "archive_members", "Bundle metadata is incomplete")
             result = {}
             for entry in entries:
                 with archive.open(entry) as stream:

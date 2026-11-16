@@ -58,7 +58,7 @@ def route_request(app, method, target, data=None):
             query = parse_qs(url.query)
             try: x, y = int(query["x"][0]), int(query["y"][0])
             except (KeyError, ValueError, IndexError) as exc: raise Fault("pixel", "Pick requires integer x and y") from exc
-            return app.plates.pick(ident, x, y)
+            return app.plates.pick(ident, x, y, query.get("mode", [None])[0])
         if method == "GET" and group == "events" and action == "history": return {"items": app.db.events(ident)}
     if method == "GET" and len(p) == 4 and p[0] == "plates" and p[2] == "passes":
         return app.plates.read_pass(p[1], p[3]), "image/png" if p[3].endswith(".png") else "application/octet-stream"

@@ -2,7 +2,7 @@ from .algebra import transform_matrix
 from .camera import validate_lens
 from .illumination import validate_illumination
 from .errors import require
-from .values import identity, text, key, object_value, boolean
+from .values import identity, text, key, object_value, boolean, vector
 
 
 class Assemblies:
@@ -46,9 +46,20 @@ class Assemblies:
                     require(mesh["state"] == "usable", "retired", "Cannot place retired geometry", 409)
                     transform = placement.get("transform", {})
                     object_value(transform, "transform")
-                    clean.append({"key": label, "mesh_id": mesh["id"], "pigment_id": pigment["id"],
-                                  "matrix": transform_matrix(transform), "transform": transform,
-                                  "visible": boolean(placement.get("visible", True), "visible")})
+                    entry = {"key": label, "mesh_id": mesh["id"], "pigment_id": pigment["id"],
+                             "matrix": transform_matrix(transform), "transform": transform,
+                             "visible": boolean(placement.get("visible", True), "visible")}
+                    motion = placement.get("motion")
+                    if motion is not None:
+                        # Uniform velocity on the shared absolute time axis:
+                        # translation units and euler degrees per unit time.
+                        object_value(motion, "motion")
+                        entry["motion"] = {
+                            "translation": vector(motion.get("translation", [0, 0, 0]),
+                                                  "motion.translation", low=-1000, high=1000),
+                            "euler": vector(motion.get("euler", [0, 0, 0]),
+                                            "motion.euler", low=-3600, high=3600)}
+                    clean.append(entry)
                 payload["placements"] = clean
             if "lens" in data:
                 payload["lens"] = validate_lens(object_value(data["lens"], "lens"))

@@ -168,6 +168,11 @@
       "responsibility": "受曝光拥有权保护的分块进度与固定快照引用"
     },
     {
+      "id": "temporal",
+      "path": "facetproof/temporal.py",
+      "responsibility": "temporal"
+    },
+    {
       "id": "reader___init__",
       "path": "facetreader/__init__.py",
       "responsibility": "独立读取器公开API"
@@ -639,6 +644,111 @@
       "success": "报告最终图版和在途分块引用及字节核验，非法操作标识拒绝",
       "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
       "verification": "python3 -m facetproof.demo --flow content-inspection"
+    },
+    {
+      "id": "motion-blur",
+      "name": "快门期间的运动模糊积分",
+      "entry": "HTTP /facet/v1 与 facetproof.demo motion-blur",
+      "module_ids": [
+        "assemblies",
+        "seals",
+        "planner",
+        "temporal",
+        "tile_renderer",
+        "tile_protocol",
+        "tile_store",
+        "passes",
+        "worker",
+        "exposures",
+        "plates"
+      ],
+      "steps": [
+        "通过公开生产入口接受操作",
+        "维护持久领域事实及引用边界",
+        "读取结果并核对成功与合法拒绝"
+      ],
+      "success": "每个时间切片完整渲染后逐像素积分，统计报告近似损失，精细积分损失低于预览",
+      "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
+      "verification": "python3 -m facetproof.demo --flow motion-blur"
+    },
+    {
+      "id": "motion-pick",
+      "name": "拖影归属的双问题定位",
+      "entry": "GET /facet/v1/plates/{id}/pick?x&y&mode",
+      "module_ids": [
+        "plates",
+        "routing",
+        "passes",
+        "temporal",
+        "blobs"
+      ],
+      "steps": [
+        "通过公开生产入口接受操作",
+        "维护持久领域事实及引用边界",
+        "读取结果并核对成功与合法拒绝"
+      ],
+      "success": "dominant 回答贡献快门时间最长的部件，latest 回答最近覆盖的表面，静态图版拾取不变",
+      "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
+      "verification": "python3 -m facetproof.demo --flow motion-pick"
+    },
+    {
+      "id": "motion-capacity",
+      "name": "时间切片计入画布额度",
+      "entry": "PUT/GET /facet/v1/resources 与 facetproof.demo motion-capacity",
+      "module_ids": [
+        "resources",
+        "exposures",
+        "planner",
+        "routing"
+      ],
+      "steps": [
+        "通过公开生产入口接受操作",
+        "维护持久领域事实及引用边界",
+        "读取结果并核对成功与合法拒绝"
+      ],
+      "success": "预留按高采样像素×时间切片计，超出拒绝，取消归还",
+      "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
+      "verification": "python3 -m facetproof.demo --flow motion-capacity"
+    },
+    {
+      "id": "motion-resume",
+      "name": "运动曝光的中断续做",
+      "entry": "POST /facet/v1/worker/step 与 facetproof.demo motion-resume",
+      "module_ids": [
+        "tile_store",
+        "tile_renderer",
+        "tile_protocol",
+        "temporal",
+        "exposures",
+        "worker"
+      ],
+      "steps": [
+        "通过公开生产入口接受操作",
+        "维护持久领域事实及引用边界",
+        "读取结果并核对成功与合法拒绝"
+      ],
+      "success": "已提交分块中断后复用不重复计入，新时序属于新的渲染定义",
+      "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
+      "verification": "python3 -m facetproof.demo --flow motion-resume"
+    },
+    {
+      "id": "motion-bundle",
+      "name": "运动图版的离线核验",
+      "entry": "GET /facet/v1/plates/{id}/bundle 与 facetproof.demo motion-bundle",
+      "module_ids": [
+        "bundles",
+        "plates",
+        "reader_archive",
+        "reader_format"
+      ],
+      "steps": [
+        "通过公开生产入口接受操作",
+        "维护持久领域事实及引用边界",
+        "读取结果并核对成功与合法拒绝"
+      ],
+      "success": "离线包保留快门选择与归属含义并通过独立读取器",
+      "failure": "合法拒绝保留既有承诺和历史事实，不产生半完成结果",
+      "verification": "python3 -m facetproof.demo --flow motion-bundle"
     }
   ],
   "complexity": {

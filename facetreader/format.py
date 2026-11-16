@@ -4,7 +4,7 @@ import json
 import math
 import re
 import struct
-from .archive import CHANNELS, MAX_SIDE, read_members
+from .archive import CHANNELS, CHANNELS_V2, MAX_SIDE, read_members
 from .errors import InvalidBundle, require
 from .png import decode_rgb
 
@@ -15,6 +15,16 @@ TRUST = {
     "render_correctness": "Not established: channels are decoded and cross-checked, not independently re-rendered",
 }
 
+# Motion-blurred plates (facet-plate-2) declare these semantics verbatim; the
+# reader re-states them independently instead of importing producer code.
+LOSS_METRIC = "max_linear_rgb_channel_delta_full_vs_even_slices"
+ATTRIBUTION = {
+    "color": "shutter_interval_mean_linear",
+    "object.u32": "dominant_time_contributor",
+    "latest.u32": "most_recently_visible_surface",
+    "depth.f32": "covered_slice_mean_nearest_forward_distance",
+}
+
 
 def _object(value, field):
     require(isinstance(value, dict), "metadata_shape", field + " must be an object")
@@ -23,6 +33,12 @@ def _object(value, field):
 
 def _integer(value, low, high, field):
     require(type(value) is int and low <= value <= high, "metadata_value", field + " is out of range")
+    return value
+
+
+def _number(value, field):
+    require(isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value),
+            "metadata_value", field + " must be a finite number")
     return value
 
 
@@ -91,14 +107,52 @@ def _objects(seal, objects):
     return expected
 
 
+def _temporal(payload, request, statistics):
+    """Cross-check a motion plate's frozen shutter choices and attribution."""
+    shutter = _object(request.get("shutter"), "request.shutter")
+    resolved = _object(request.get("temporal"), "request.temporal")
+    open_ = _number(shutter.get("open"), "shutter.open")
+    close = _number(shutter.get("close"), "shutter.close")
+    require(close > open_, "temporal", "A motion plate needs a nonempty shutter interval")
+    slices = _integer(shutter.get("samples"), 2, 64, "shutter.samples")
+    require(resolved.get("motion") is True, "temporal", "Resolved temporal block must record motion")
+    require(_integer(resolved.get("slices"), 2, 64, "temporal.slices") == slices and
+            _integer(resolved.get("requested_slices"), 2, 64, "temporal.requested_slices") == slices,
+            "temporal", "Resolved slice count disagrees with the shutter")
+    block = _object(payload.get("temporal"), "payload.temporal")
+    require(_number(block.get("open"), "temporal.open") == open_
+            and _number(block.get("close"), "temporal.close") == close,
+            "temporal", "Temporal block disagrees with the frozen shutter")
+    require(block.get("motion") is True and block.get("integration") == "midpoint_rule",
+            "temporal", "Unexpected temporal integration")
+    require(_integer(block.get("slices"), 2, 64, "temporal.slices") == slices
+            and _integer(block.get("requested_slices"), 2, 64, "temporal.requested_slices") == slices,
+            "temporal", "Temporal slice counts disagree")
+    loss = _object(block.get("loss"), "temporal.loss")
+    require(loss.get("metric") == LOSS_METRIC, "temporal", "Unexpected approximation-loss metric")
+    require(_integer(loss.get("reference_slices"), 1, 64, "temporal.loss.reference_slices") == (slices + 1) // 2,
+            "temporal", "Loss reference is not the even-slice subset")
+    mean = _number(loss.get("mean"), "temporal.loss.mean")
+    maximum = _number(loss.get("max"), "temporal.loss.max")
+    require(0 <= mean <= maximum, "temporal", "Approximation-loss estimate is inconsistent")
+    attribution = _object(block.get("attribution"), "temporal.attribution")
+    require(attribution == ATTRIBUTION, "temporal", "Attribution semantics changed")
+    require(statistics.get("time_slices") == slices and statistics.get("temporal_loss") == loss,
+            "temporal", "Statistics disagree with the temporal block")
+    return {"shutter": {"open": open_, "close": close, "samples": slices},
+            "slices": slices, "integration": "midpoint_rule", "loss": loss}, attribution
+
+
 def evaluate(raw):
     members = read_members(raw)
     plate = _json(members["plate.json"], "plate.json")
     seal = _json(members["seal.json"], "seal.json")
     payload = _object(plate.get("payload"), "plate.payload")
     frozen = _object(seal.get("payload"), "seal.payload")
-    require(payload.get("format") == "facet-plate-1" and frozen.get("format") == "facet-seal-1",
+    require(payload.get("format") in {"facet-plate-1", "facet-plate-2"}
+            and frozen.get("format") == "facet-seal-1",
             "format", "Unsupported plate or seal format")
+    motion = payload["format"] == "facet-plate-2"
     require(plate.get("state") == "ready" and seal.get("kind") == "seal"
             and seal.get("state") == "frozen", "metadata_state", "Unexpected embedded plate or seal state")
     plate_id = _text(plate.get("id"), "plate.id")
@@ -123,8 +177,12 @@ def evaluate(raw):
     _text(request.get("renderer"), "request.renderer")
     objects = _objects(frozen, payload.get("objects"))
     descriptors = _object(payload.get("passes"), "passes")
-    require(set(descriptors) == CHANNELS, "channels", "Expected exactly the six version-one channels")
-    for name in sorted(CHANNELS):
+    expected_channels = CHANNELS_V2 if motion else CHANNELS
+    require(set(descriptors) == expected_channels,
+            "channels", "Channel set does not match the plate format")
+    require(set(members) == {"plate.json", "seal.json"} | {"passes/" + name for name in expected_channels},
+            "archive_members", "Archive members do not match the plate format")
+    for name in sorted(expected_channels):
         descriptor = _object(descriptors[name], "descriptor")
         require(set(descriptor) == {"sha256", "size"}, "descriptor", "Unexpected descriptor fields")
         data = members["passes/" + name]
@@ -141,8 +199,10 @@ def evaluate(raw):
                for name in ("color.png", "depth.png", "object.png")}
     require(decoded["color.png"] == members["passes/color.rgb"],
             "color_pixels", "PNG pixels disagree with the raw color channel")
-    depths = struct.iter_unpack("<f", members["passes/depth.f32"])
-    indices = struct.iter_unpack("<I", members["passes/object.u32"])
+    streams = [struct.iter_unpack("<f", members["passes/depth.f32"]),
+               struct.iter_unpack("<I", members["passes/object.u32"])]
+    if motion:
+        streams.append(struct.iter_unpack("<I", members["passes/latest.u32"]))
     covered = 0
     background = 0
     minimum = math.inf
@@ -152,7 +212,13 @@ def evaluate(raw):
     first_foreground = False
     first_background = False
     object_preview = decoded["object.png"]
-    for offset, ((depth,), (index,)) in enumerate(zip(depths, indices)):
+    for offset, values in enumerate(zip(*streams)):
+        depth, index = values[0][0], values[1][0]
+        recent = values[2][0] if motion else index
+        require((recent == 0) == (index == 0), "latest_semantics",
+                "Latest-surface and dominant channels disagree about background")
+        if recent:
+            require(str(recent) in objects, "object_index", "Pixel refers to an unknown object")
         if index == 0:
             require(depth == math.inf, "depth_background", "Background must have positive infinite depth")
             background += 1
@@ -171,9 +237,13 @@ def evaluate(raw):
         require(object_preview[offset*3:offset*3+3] == expected_color,
                 "object_preview", "Object preview disagrees with the identifier channel")
         if take or offset in sample_offsets:
-            picks.append({"x": offset % width, "y": offset // width, "object_index": index,
-                          "object": objects.get(str(index)), "depth": depth if index else None,
-                          "seal_id": seal_id})
+            pick = {"x": offset % width, "y": offset // width, "object_index": index,
+                    "object": objects.get(str(index)), "depth": depth if index else None,
+                    "seal_id": seal_id}
+            if motion:
+                pick["latest_index"] = recent
+                pick["latest_object"] = objects.get(str(recent))
+            picks.append(pick)
     statistics = _object(payload.get("statistics"), "statistics")
     require(statistics.get("byte_order") == "little"
             and statistics.get("background_depth") == "positive_infinity"
@@ -181,12 +251,18 @@ def evaluate(raw):
             "channel_semantics", "Unexpected raw-channel interpretation")
     require(type(statistics.get("covered_pixels")) is int and statistics["covered_pixels"] == covered,
             "coverage", "Coverage count disagrees with the identifier channel")
+    exposure = attribution = None
+    if motion:
+        exposure, attribution = _temporal(payload, request, statistics)
+    summary = {"width": width, "height": height, "samples": samples,
+               "covered_pixels": covered, "background_pixels": background,
+               "objects": len(objects), "finite_depth_range": [minimum, maximum] if covered else None,
+               "depth_units": "camera_forward_distance", "object_id_scope": "local_to_this_plate"}
+    if motion:
+        summary["time_slices"] = exposure["slices"]
     report = {
-        "valid": True, "format": "facet-plate-1",
-        "summary": {"width": width, "height": height, "samples": samples,
-                    "covered_pixels": covered, "background_pixels": background,
-                    "objects": len(objects), "finite_depth_range": [minimum, maximum] if covered else None,
-                    "depth_units": "camera_forward_distance", "object_id_scope": "local_to_this_plate"},
+        "valid": True, "format": payload["format"],
+        "summary": summary,
         "provenance": {"plate_id": plate_id, "exposure_id": exposure_id, "seal_id": seal_id,
                        "seal_hash": content_hash, "lens_hash": payload["lens_hash"],
                        "visual_hash": payload["visual_hash"], "renderer": request["renderer"],
@@ -200,4 +276,8 @@ def evaluate(raw):
                            for item in sorted(frozen["closure"], key=lambda item: item["placement"]["key"])]},
         "channels": descriptors, "picks": picks, "trust": dict(TRUST),
     }
+    if motion:
+        # Offline results keep the exposure choices and attribution meaning.
+        report["exposure"] = exposure
+        report["attribution"] = attribution
     return report, members

@@ -3,7 +3,12 @@ import math
 import struct
 from .errors import require
 from .png import inspect_png
-from .values import identity, canonical, now, integer
+from .values import identity, canonical, now, integer, choice
+
+PICK_QUESTIONS = {
+    "dominant": "Which part contributed the most shutter time to this pixel's color?",
+    "latest": "Which surface most recently covered this pixel before the shutter closed?",
+}
 
 
 class Plates:
@@ -66,17 +71,31 @@ class Plates:
             results[name] = descriptor["sha256"]
         return {"valid": True, "passes": results}
 
-    def pick(self, plate_id, x, y):
+    def pick(self, plate_id, x, y, mode=None):
         with self.db.unit_of_work() as conn:
             plate = self._get(conn, plate_id)
             payload = plate["payload"]
             x = integer(x, "x", 0, payload["width"]-1)
             y = integer(y, "y", 0, payload["height"]-1)
             offset = (y*payload["width"]+x) * 4
-            index = struct.unpack_from("<I", self.blobs.read(payload["passes"]["object.u32"]["sha256"]), offset)[0]
+            if payload["format"] != "facet-plate-2":
+                require(mode is None, "pick_mode",
+                        "Pick mode is only defined for motion-blurred plates", 400)
+                index = struct.unpack_from("<I", self.blobs.read(payload["passes"]["object.u32"]["sha256"]), offset)[0]
+                distance = struct.unpack_from("<f", self.blobs.read(payload["passes"]["depth.f32"]["sha256"]), offset)[0]
+                return {"x": x, "y": y, "object": payload["objects"].get(str(index)),
+                        "depth": distance if math.isfinite(distance) else None,
+                        "seal_id": payload["seal_id"]}
+            # A smeared pixel holds several surfaces over the shutter interval;
+            # the mode declares which question this location answers.
+            mode = choice("dominant" if mode is None else mode, "mode", set(PICK_QUESTIONS))
+            channel = "object.u32" if mode == "dominant" else "latest.u32"
+            index = struct.unpack_from("<I", self.blobs.read(payload["passes"][channel]["sha256"]), offset)[0]
             distance = struct.unpack_from("<f", self.blobs.read(payload["passes"]["depth.f32"]["sha256"]), offset)[0]
-            return {"x": x, "y": y, "object": payload["objects"].get(str(index)),
+            return {"x": x, "y": y, "mode": mode, "question": PICK_QUESTIONS[mode],
+                    "object": payload["objects"].get(str(index)),
                     "depth": distance if math.isfinite(distance) else None,
+                    "depth_meaning": payload["temporal"]["attribution"]["depth.f32"],
                     "seal_id": payload["seal_id"]}
 
     def quarantine(self, plate_id, reason):

@@ -37,11 +37,8 @@ def identity_matrix():
     return [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]]
 
 
-def transform_matrix(data):
-    translation = vector(data.get("translation", [0, 0, 0]), "translation", low=-10000, high=10000)
-    angles = vector(data.get("euler", [0, 0, 0]), "euler", low=-3600, high=3600)
-    sizes = vector(data.get("scale", [1, 1, 1]), "scale", low=-1000, high=1000)
-    require(all(abs(x) >= 1e-5 for x in sizes), "singular", "Scale cannot collapse geometry")
+def compose_matrix(translation, angles, sizes):
+    """Build a transform without intake bounds; motion can leave the edit range."""
     rx, ry, rz = [math.radians(x) for x in angles]
     cx, sx = math.cos(rx), math.sin(rx)
     cy, sy = math.cos(ry), math.sin(ry)
@@ -55,6 +52,14 @@ def transform_matrix(data):
             matrix[row][col] = euler[row][col] * sizes[col]
         matrix[row][3] = translation[row]
     return matrix
+
+
+def transform_matrix(data):
+    translation = vector(data.get("translation", [0, 0, 0]), "translation", low=-10000, high=10000)
+    angles = vector(data.get("euler", [0, 0, 0]), "euler", low=-3600, high=3600)
+    sizes = vector(data.get("scale", [1, 1, 1]), "scale", low=-1000, high=1000)
+    require(all(abs(x) >= 1e-5 for x in sizes), "singular", "Scale cannot collapse geometry")
+    return compose_matrix(translation, angles, sizes)
 
 
 def point(matrix, value):

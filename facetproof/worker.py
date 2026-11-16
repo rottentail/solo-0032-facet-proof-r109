@@ -3,6 +3,7 @@ from .errors import Fault, require
 from .planner import build_plan
 from .tile_renderer import TileEngine
 from .passes import serialize_passes
+from .temporal import ATTRIBUTION
 from .values import digest
 
 
@@ -42,6 +43,20 @@ class Worker:
                        "lens_hash": plan["lens_hash"], "objects": plan["objects"],
                        "passes": descriptors, "statistics": statistics,
                        "visual_hash": digest(descriptors)}
+            temporal = exposure["request"].get("temporal")
+            if temporal is not None:
+                block = {"open": temporal["open"], "close": temporal["close"],
+                         "slices": temporal["slices"],
+                         "requested_slices": temporal["requested_slices"],
+                         "motion": temporal["motion"]}
+                if "slices" in plan:
+                    payload["format"] = "facet-plate-2"
+                    block["integration"] = "midpoint_rule"
+                    block["loss"] = statistics["temporal_loss"]
+                    block["attribution"] = dict(ATTRIBUTION)
+                else:
+                    block["integration"] = "single_instant" if temporal["motion"] else "static_scene"
+                payload["temporal"] = block
             self.exposures.heartbeat(exposure["id"], exposure["token"])
             plate = self.plates.finish(exposure, payload)
             return {"state": "succeeded", "exposure_id": exposure["id"], "plate": plate}
